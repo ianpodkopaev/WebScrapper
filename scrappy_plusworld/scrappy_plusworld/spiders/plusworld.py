@@ -24,18 +24,39 @@ class PlusworldSpider(scrapy.Spider):
         self.logger.info(f"Date threshold: {self.date_threshold.strftime('%d %B %Y')}")
 
     def start_requests(self):
-        # Direct URL to digital banking section
-        start_url = "https://plusworld.ru/digital-banking/"
-        yield scrapy.Request(
-            url=start_url,
-            callback=self.parse_article_list,
-            meta={'page': 1}
-        )
+        # Define all the sections to scrape
+        sections = [
+            {
+                'url': 'https://plusworld.ru/digital-banking/',
+                'search_term': 'digital-banking'
+            },
+            {
+                'url': 'https://plusworld.ru/finteh/',
+                'search_term': 'fintech'
+            },
+            {
+                'url': 'https://plusworld.ru/iskusstvennyy-intellekt-i-big-data/',
+                'search_term': 'ai-big-data'
+            }
+        ]
+
+        for section in sections:
+            yield scrapy.Request(
+                url=section['url'],
+                callback=self.parse_article_list,
+                meta={
+                    'page': 1,
+                    'search_term': section['search_term'],
+                    'base_url': section['url']
+                }
+            )
 
     def parse_article_list(self, response):
         page = response.meta['page']
+        search_term = response.meta['search_term']
+        base_url = response.meta['base_url']
 
-        self.logger.info(f"Parsing Plusworld.ru digital banking page {page}")
+        self.logger.info(f"Parsing Plusworld.ru {search_term} page {page}")
 
         # Extract article links with dates from main page
         articles_data = self.extract_articles_with_dates(response)
@@ -44,7 +65,7 @@ class PlusworldSpider(scrapy.Spider):
         if page == 1 and len(articles_data) > 7:
             articles_data = articles_data[7:]
 
-        self.logger.info(f"Found {len(articles_data)} articles after processing page {page}")
+        self.logger.info(f"Found {len(articles_data)} articles for {search_term} after processing page {page}")
 
         # Follow article links to get full content
         for article_data in articles_data[:15]:  # Limit to 15 articles per page
@@ -53,13 +74,13 @@ class PlusworldSpider(scrapy.Spider):
                     url=article_data['url'],
                     callback=self.parse_article,
                     meta={
-                        'search_term': 'digital-banking',
+                        'search_term': search_term,
                         'article_date': article_data['date'],
                         'title': article_data['title']
                     }
                 )
             else:
-                self.logger.info(f"Skipping old article: {article_data['date']}")
+                self.logger.info(f"Skipping old article from {search_term}: {article_data['date']}")
 
         # Pagination - look for next page
         if page < 3 and len(articles_data) > 0:
@@ -68,7 +89,11 @@ class PlusworldSpider(scrapy.Spider):
                 yield scrapy.Request(
                     url=next_page,
                     callback=self.parse_article_list,
-                    meta={'page': page + 1}
+                    meta={
+                        'page': page + 1,
+                        'search_term': search_term,
+                        'base_url': base_url
+                    }
                 )
 
     def extract_articles_with_dates(self, response):
