@@ -41,6 +41,7 @@ class PlusworldSpider(scrapy.Spider):
         ]
 
         for section in sections:
+            self.logger.info(f"Starting scrape for section: {section['search_term']} at {section['url']}")
             yield scrapy.Request(
                 url=section['url'],
                 callback=self.parse_article_list,
@@ -48,7 +49,8 @@ class PlusworldSpider(scrapy.Spider):
                     'page': 1,
                     'search_term': section['search_term'],
                     'base_url': section['url']
-                }
+                },
+                dont_filter=False  # Ensure requests are processed
             )
 
     def parse_article_list(self, response):
@@ -56,20 +58,26 @@ class PlusworldSpider(scrapy.Spider):
         search_term = response.meta['search_term']
         base_url = response.meta['base_url']
 
-        self.logger.info(f"Parsing Plusworld.ru {search_term} page {page}")
+        self.logger.info(f"Parsing Plusworld.ru {search_term} page {page} - URL: {response.url}")
 
         # Extract article links with dates from main page
         articles_data = self.extract_articles_with_dates(response)
 
+        self.logger.info(f"Found {len(articles_data)} raw articles for {search_term} on page {page}")
+
         # Skip first 7 articles only on page 1
         if page == 1 and len(articles_data) > 7:
             articles_data = articles_data[7:]
+            self.logger.info(f"Skipped first 7 articles, {len(articles_data)} remaining for {search_term}")
 
-        self.logger.info(f"Found {len(articles_data)} articles for {search_term} after processing page {page}")
+        self.logger.info(f"Processing {len(articles_data)} articles for {search_term} after filtering")
 
         # Follow article links to get full content
+        article_count = 0
         for article_data in articles_data[:15]:  # Limit to 15 articles per page
             if article_data['date'] is None or article_data['date'] >= self.date_threshold:
+                article_count += 1
+                self.logger.info(f"Yielding article request for {search_term}: {article_data['title'][:50]}...")
                 yield scrapy.Request(
                     url=article_data['url'],
                     callback=self.parse_article,
@@ -82,10 +90,13 @@ class PlusworldSpider(scrapy.Spider):
             else:
                 self.logger.info(f"Skipping old article from {search_term}: {article_data['date']}")
 
+        self.logger.info(f"Yielded {article_count} article requests for {search_term} page {page}")
+
         # Pagination - look for next page
         if page < 3 and len(articles_data) > 0:
             next_page = self.find_next_page(response)
             if next_page:
+                self.logger.info(f"Found next page for {search_term}: {next_page}")
                 yield scrapy.Request(
                     url=next_page,
                     callback=self.parse_article_list,
@@ -95,6 +106,10 @@ class PlusworldSpider(scrapy.Spider):
                         'base_url': base_url
                     }
                 )
+            else:
+                self.logger.info(f"No next page found for {search_term}")
+        else:
+            self.logger.info(f"Reached page limit or no articles for {search_term}")
 
     def extract_articles_with_dates(self, response):
         """
@@ -105,6 +120,7 @@ class PlusworldSpider(scrapy.Spider):
 
         # Method 1: Look for cards in the "Также по теме" or "Другие статьи" sections
         cards = response.css('.card, .pw-wide .card, .section .card')
+        self.logger.info(f"Found {len(cards)} card elements")
 
         for card in cards:
             link = card.css('a::attr(href)').get()
@@ -122,10 +138,12 @@ class PlusworldSpider(scrapy.Spider):
                         'title': title.strip(),
                         'date': article_date
                     })
+                    self.logger.debug(f"Found article from card: {title[:50]}...")
 
         # Method 2: Look for direct article links in content
         if not articles_data:
             article_links = response.css('a[href*="/articles/"]')
+            self.logger.info(f"Found {len(article_links)} article links")
             for link in article_links:
                 href = link.css('::attr(href)').get()
                 title = link.css('::text').get()
@@ -142,11 +160,13 @@ class PlusworldSpider(scrapy.Spider):
                             'title': title.strip(),
                             'date': article_date
                         })
+                        self.logger.debug(f"Found article from link: {title[:50]}...")
 
         # Method 3: Look for articles in specific sections
         if not articles_data:
             # Try to find articles in popular sections
             popular_sections = response.css('.popular-embed, .popular-line, .box-news')
+            self.logger.info(f"Found {len(popular_sections)} popular sections")
             for section in popular_sections:
                 link = section.css('a[href*="/articles/"]::attr(href)').get()
                 title = section.css('a::text').get()
@@ -162,6 +182,7 @@ class PlusworldSpider(scrapy.Spider):
                             'title': title.strip(),
                             'date': article_date
                         })
+                        self.logger.debug(f"Found article from popular section: {title[:50]}...")
 
         # Remove duplicates by URL
         unique_articles = {}
@@ -169,7 +190,9 @@ class PlusworldSpider(scrapy.Spider):
             if article['url'] not in unique_articles:
                 unique_articles[article['url']] = article
 
-        return list(unique_articles.values())
+        result = list(unique_articles.values())
+        self.logger.info(f"After deduplication: {len(result)} unique articles")
+        return result
 
     def find_date_near_element(self, element):
         """Find date text near a link element"""
@@ -345,6 +368,8 @@ class PlusworldSpider(scrapy.Spider):
 
         # Extract description - get first meaningful paragraph from article content
         description = self.extract_first_paragraph(response)
+
+        self.logger.info(f"Successfully scraped article from {search_term}: {title[:50]}...")
 
         yield {
             'title': title,
